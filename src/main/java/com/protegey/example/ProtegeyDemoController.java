@@ -19,11 +19,13 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/** Minimal demo of protegey-sdk from a Spring Boot backend — transactions, KYC, KYB, alerts,
+/** Minimal demo of protegey-sdk from a Spring Boot backend — transactions, cash deposits, KYC, KYB, alerts,
  * sanctions screening, the shared signal network, and verifying an incoming webhook. */
 @RestController
 public class ProtegeyDemoController {
@@ -72,6 +74,32 @@ public class ProtegeyDemoController {
         return protegey.transactions.list(Map.of("externalCustomerId", customerId(session), "limit", 10));
     }
 
+    // ---- Cash deposits ----
+
+    /** A cash deposit taken at a branch — Protegey monitors it as a cash CREDIT, so it runs through
+     * the same rules (structuring, large cash, ...) and raises the same alerts as a transaction. */
+    @PostMapping("/protegey/report-cash-deposit")
+    public Map<String, Object> reportCashDeposit(HttpSession session) {
+        Map<String, Object> deposit = new HashMap<>();
+        // Your own reference makes retries safe — reusing it gets a 409.
+        deposit.put("externalTransactionId", "springboot-deposit-" + UUID.randomUUID());
+        deposit.put("externalCustomerId", customerId(session));
+        deposit.put("amount", 2500000);
+        deposit.put("currency", "XOF");          // ISO 4217, required
+        deposit.put("channel", "BRANCH");
+        deposit.put("branchId", "DKR-PLATEAU");
+        deposit.put("depositorName", "Awa Diallo");
+        deposit.put("metadata", Map.of("tellerId", "T-04"));
+        // depositedAt defaults to now
+        return protegey.cashDeposits.record(deposit); // cashDepositId, decision, riskScore, alerts[]
+    }
+
+    @GetMapping("/protegey/cash-deposits")
+    public Map<String, Object> myCashDeposits(HttpSession session) {
+        // amount is a decimal string in each row, e.g. "2500000.00"
+        return protegey.cashDeposits.list(Map.of("externalCustomerId", customerId(session), "limit", 10));
+    }
+
     // ---- KYC ----
 
     @PostMapping("/protegey/start-kyc")
@@ -81,7 +109,7 @@ public class ProtegeyDemoController {
         return started; // {sessionId, url}
     }
 
-    /** Polling fallback for kyc.status_changed (whose payload only identifies the user by externalUserId). */
+    /** Polling fallback for kyc.status_changed (whose sessionId is this same id). */
     @GetMapping("/protegey/kyc-status")
     public Map<String, Object> kycStatus(HttpSession session) {
         Object sessionId = session.getAttribute("protegeyDemoKycSessionId");
@@ -89,9 +117,34 @@ public class ProtegeyDemoController {
             return Map.of("error", "start a KYC session first");
         }
         Map<String, Object> kyc = protegey.kyc.getSession((String) sessionId);
-        // Drop the base64 photos from the demo output to keep it readable.
+        return summarize(kyc);
+    }
+
+    /** Exact lookup on your own customer id (defaults to this HTTP session's demo customer). */
+    @GetMapping("/protegey/kyc-lookup")
+    public Map<String, Object> kycLookup(@RequestParam(required = false) String externalUserId, HttpSession session) {
+        String id = blankToNull(externalUserId) != null ? externalUserId : customerId(session);
+        Map<String, Object> page = protegey.kyc.findByExternalUserId(id);
+        List<Map<String, Object>> sessions = new ArrayList<>();
+        for (Object row : (List<?>) page.get("data")) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> s = (Map<String, Object>) row;
+            sessions.add(summarize(s));
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("externalUserId", id);
+        result.put("total", page.get("total"));
+        result.put("sessions", sessions);
+        return result;
+    }
+
+    /** status = final decision; recommendation = Protegey's own verdict (APPROVE | REVIEW | REJECT |
+     * null), never changed by a manual override; images = pre-signed photo links ({url, expiresAt}
+     * or null), valid 1 hour and re-issued on every call — never store them. The legacy base64
+     * photo fields are left out to keep the output readable. */
+    private static Map<String, Object> summarize(Map<String, Object> kyc) {
         Map<String, Object> summary = new HashMap<>();
-        for (String key : new String[] {"sessionId", "externalUserId", "status", "outcome", "fullName", "documentType", "country"}) {
+        for (String key : new String[] {"sessionId", "externalUserId", "status", "recommendation", "outcome", "fullName", "documentType", "country", "images"}) {
             summary.put(key, kyc.get(key));
         }
         return summary;
@@ -151,13 +204,17 @@ public class ProtegeyDemoController {
         }
 
         Map<String, Object> event = JsonParserFactory.getJsonParser().parseMap(rawBody);
-        // Deliveries are retried (up to 5 attempts) — deduplicate on eventId in a real integration.
+        // Deliveries are retried (up to 5 attempts over ~3 h) — deduplicate on eventId in a real integration.
         String type = String.valueOf(event.get("type"));
         switch (type) {
+            // Fires on an automatic result and on a manual status change; sessionId is the id
+            // startSession() returned.
             case WebhookVerifier.KYC_STATUS_CHANGED ->
-                log.info("KYC {} for user {}", event.get("status"), event.get("externalUserId"));
+                log.info("KYC session {} for user {}: {} (Protegey recommendation {})",
+                    event.get("sessionId"), event.get("externalUserId"), event.get("status"), event.get("recommendation"));
+            // submissionStatus is UPPER_SNAKE_CASE like status (e.g. APPROVED).
             case WebhookVerifier.KYB_STATUS_CHANGED ->
-                log.info("KYB client {} is now {}", event.get("clientId"), event.get("status"));
+                log.info("KYB client {} is now {} (submission {})", event.get("clientId"), event.get("status"), event.get("submissionStatus"));
             case WebhookVerifier.ALERT_CREATED, WebhookVerifier.ALERT_STATUS_CHANGED ->
                 log.info("Alert {} ({}) {}", event.get("alertId"), event.get("ruleCode"), event.get("status"));
             case WebhookVerifier.TRANSACTION_BLOCKED ->

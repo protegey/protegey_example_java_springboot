@@ -1,7 +1,7 @@
 # Protegey — Spring Boot example
 
-Minimal Spring Boot app demonstrating `protegey-sdk` (Java) 0.7.0 from a real backend:
-transactions, KYC, KYB, alerts, sanctions screening, the shared signal network, and verifying an
+Minimal Spring Boot app demonstrating `protegey-sdk` (Java) 0.8.0 from a real backend:
+transactions, cash deposits, KYC, KYB, alerts, sanctions screening, the shared signal network, and verifying an
 incoming webhook's HMAC signature.
 
 ## Run it
@@ -26,8 +26,14 @@ Open `http://localhost:8080` — each button calls the backend directly.
 - `ProtegeyConfig.java` — wires a `Protegey` bean from `protegey.*` properties (`application.properties`).
 - `ProtegeyDemoController.java`:
   - `POST /protegey/report-transaction` — `transactions.report()`; `GET /protegey/transactions` — `transactions.list()`.
+  - `POST /protegey/report-cash-deposit` — `cashDeposits.record()` (a branch deposit with your own
+    `externalTransactionId`; reusing it gets a 409); `GET /protegey/cash-deposits` —
+    `cashDeposits.list()` (`amount` is a decimal string).
   - `POST /protegey/start-kyc` — `kyc.startSession()`, returns the hosted URL (opened in a new tab);
-    `GET /protegey/kyc-status` — `kyc.getSession()` polling fallback.
+    `GET /protegey/kyc-status` — `kyc.getSession()` polling fallback;
+    `GET /protegey/kyc-lookup?externalUserId=` — `kyc.findByExternalUserId()` (exact match). Both
+    show the final `status`, Protegey's `recommendation` (APPROVE | REVIEW | REJECT) and the
+    pre-signed photo links in `images` (valid 1 hour, re-issued on every call).
   - `POST /protegey/invite-business?contactName=&contactEmail=&contactPhone=` — `kyb.invite()` with
     email and/or phone; returns the `applicationUrl` to hand to the applicant.
   - `GET /protegey/alerts` — `alerts.list()` of open alerts; `POST /protegey/alerts/{id}/dismiss` — `alerts.update()`.
@@ -35,6 +41,8 @@ Open `http://localhost:8080` — each button calls the backend directly.
   - `POST /protegey/shared-signal-check?phoneNumber=` — `sharedSignal.check()` (the network must be
     enabled for your account).
   - `POST /protegey/webhook` — verifies `X-Signature`/`X-Timestamp` via `WebhookVerifier.verify()`
-    (with a 5-minute timestamp tolerance) before trusting the payload, then dispatches on `type`.
+    (with a 5-minute timestamp tolerance) before trusting the payload, then dispatches on `type`
+    (`kyc.status_changed` carries `sessionId` and `recommendation`, and also fires on manual status
+    changes; deliveries are retried up to 5 times over ~3 h — deduplicate on `eventId`).
     Point your Protegey webhook URL at this route to see it in action.
   - `ProtegeyApiException` is mapped to its own status, message and `errorCode`.

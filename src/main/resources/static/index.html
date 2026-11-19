@@ -21,8 +21,16 @@
         <button id="alerts">Open alerts</button>
     </div>
     <div>
+        <button id="deposit">Record a cash deposit</button>
+        <button id="deposits">My cash deposits</button>
+    </div>
+    <div>
         <button id="kyc">Verify my identity</button>
-        <button id="kycStatus">KYC status</button>
+        <button id="kycStatus">KYC status (recommendation + photos)</button>
+    </div>
+    <div>
+        <input id="externalUserId" placeholder="externalUserId (exact, blank = me)">
+        <button id="kycLookup">KYC lookup</button>
     </div>
     <div>
         <input id="name" placeholder="Name to screen">
@@ -51,6 +59,10 @@
             show('kyc.startSession()', result);
             if (result.url) window.open(result.url, '_blank', 'noopener,noreferrer');
         });
+        on('deposit', async () => show('cashDeposits.record()', await call('POST', '/protegey/report-cash-deposit')));
+        on('deposits', async () => show('cashDeposits.list()', await call('GET', '/protegey/cash-deposits')));
+        on('kycLookup', async () => show('kyc.findByExternalUserId()',
+            await call('GET', '/protegey/kyc-lookup?' + q({ externalUserId: document.getElementById('externalUserId').value }))));
         on('kycStatus', async () => show('kyc.getSession()', await call('GET', '/protegey/kyc-status')));
         on('screen', async () => show('sanctions.screen()',
             await call('POST', '/protegey/screen?' + q({ name: document.getElementById('name').value }))));
